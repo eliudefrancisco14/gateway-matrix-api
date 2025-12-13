@@ -9,3 +9,8 @@ passlib[bcrypt]==1.7.4
 python-multipart==0.0.6
 python-dateutil==2.8.2
 pytz==2023.3
+
+# Novos - Background Processing e FFmpeg
+apscheduler==3.10.4
+aiofiles==23.2.1
+psutil==5.9.6
