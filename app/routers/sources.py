@@ -1,9 +1,10 @@
 """
-Rotas de fontes de ingestão.
+Rotas de fontes de ingestão (modificado com endpoints de teste e reconexão).
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from uuid import UUID
+from datetime import datetime
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.services.source_service import SourceService
@@ -12,21 +13,30 @@ from app.schemas.source import SourceSchema, SourceCreateSchema, SourceUpdateSch
 router = APIRouter(prefix="/sources", tags=["sources"])
 
 
-@router.get("", response_model=list[SourceSchema])
+@router.get("", response_model=dict)
 async def list_sources(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(10, ge=1, le=100),
-    status: str = Query(None),
-    protocol: str = Query(None),
+    skip: int = Query(0, ge=0, description="Número de registros a pular"),
+    limit: int = Query(10, ge=1, le=100, description="Limite de registros por página"),
+    status: str = Query(None, description="Filtrar por status"),
+    protocol: str = Query(None, description="Filtrar por protocolo"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Lista todas as fontes com paginação e filtros."""
     sources = SourceService.get_all_sources(db, skip=skip, limit=limit, status=status, protocol=protocol)
-    return sources
+    
+    # Total de registros (sem paginação)
+    total = db.query(db.query(db.models.Source).filter_by(is_active=True)).count() if not (status or protocol) else len(sources)
+    
+    return {
+        "items": sources,
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
 
 
-@router.post("", response_model=SourceSchema)
+@router.post("", response_model=SourceSchema, status_code=status.HTTP_201_CREATED)
 async def create_source(
     source_data: SourceCreateSchema,
     current_user: dict = Depends(get_current_user),
@@ -85,7 +95,7 @@ async def update_source(
     return updated_source
 
 
-@router.delete("/{source_id}")
+@router.delete("/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_source(
     source_id: UUID,
     current_user: dict = Depends(get_current_user),
@@ -100,7 +110,7 @@ async def delete_source(
             detail="Fonte não encontrada"
         )
     
-    return {"success": True}
+    return None
 
 
 @router.post("/{source_id}/test")
@@ -118,18 +128,18 @@ async def test_source(
             detail="Fonte não encontrada"
         )
     
-    # Implementação simplificada: retornar status simulado
-    return {
-        "reachable": True,
-        "latency_ms": 25,
-        "details": "Conexão bem-sucedida"
-    }
+    # Testar conectividade usando stream probe
+    result = await SourceService.test_source_connectivity(db, source_id)
+    
+    return result
 
 
 @router.get("/{source_id}/metrics", response_model=list[SourceMetricSchema])
 async def get_source_metrics(
     source_id: UUID,
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(100, ge=1, le=1000, description="Limite de métricas"),
+    from_time: datetime = Query(None, description="Data/hora inicial (ISO 8601)"),
+    to_time: datetime = Query(None, description="Data/hora final (ISO 8601)"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -142,7 +152,18 @@ async def get_source_metrics(
             detail="Fonte não encontrada"
         )
     
-    metrics = SourceService.get_metrics(db, source_id, limit=limit)
+    # Obter métricas com filtros de período
+    if from_time or to_time:
+        metrics = SourceService.get_metrics_history(
+            db,
+            source_id,
+            from_time=from_time,
+            to_time=to_time,
+            limit=limit
+        )
+    else:
+        metrics = SourceService.get_metrics(db, source_id, limit=limit)
+    
     return metrics
 
 
@@ -161,10 +182,30 @@ async def reconnect_source(
             detail="Fonte não encontrada"
         )
     
-    # Implementação simplificada: atualizar status
-    updated_source = SourceService.update_source(db, source_id, status="connecting")
+    # Iniciar reconexão
+    success = await SourceService.reconnect_source(db, source_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro ao iniciar reconexão"
+        )
     
     return {
-        "status": updated_source.status,
+        "status": "connecting",
         "message": "Reconexão iniciada"
+    }
+
+
+@router.get("/summary/status")
+async def get_sources_status_summary(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Obtém resumo de status de todas as fontes."""
+    summary = SourceService.get_source_status_summary(db)
+    
+    return {
+        "summary": summary,
+        "total": sum(summary.values())
     }

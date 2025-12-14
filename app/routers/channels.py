@@ -1,5 +1,5 @@
 """
-Rotas de canais de transmissão.
+Rotas de canais de transmissão (modificado com integração ao pipeline).
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -13,21 +13,36 @@ from app.schemas.channel import ChannelSchema, ChannelCreateSchema, ChannelUpdat
 router = APIRouter(prefix="/channels", tags=["channels"])
 
 
-@router.get("", response_model=list[ChannelSchema])
+@router.get("", response_model=dict)
 async def list_channels(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(10, ge=1, le=100),
-    status: str = Query(None),
-    category: str = Query(None),
+    skip: int = Query(0, ge=0, description="Número de registros a pular"),
+    limit: int = Query(10, ge=1, le=100, description="Limite de registros por página"),
+    status: str = Query(None, description="Filtrar por status"),
+    category: str = Query(None, description="Filtrar por categoria"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Lista todos os canais com paginação e filtros."""
     channels = ChannelService.get_all_channels(db, skip=skip, limit=limit, status=status, category=category)
-    return channels
+    
+    from app.models.channel import Channel
+    total_query = db.query(Channel).filter(Channel.is_active == True)
+    if status:
+        total_query = total_query.filter(Channel.status == status)
+    if category:
+        total_query = total_query.filter(Channel.category == category)
+    
+    total = total_query.count()
+    
+    return {
+        "items": channels,
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
 
 
-@router.post("", response_model=ChannelSchema)
+@router.post("", response_model=ChannelSchema, status_code=status.HTTP_201_CREATED)
 async def create_channel(
     channel_data: ChannelCreateSchema,
     current_user: dict = Depends(get_current_user),
@@ -42,6 +57,14 @@ async def create_channel(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Fonte não encontrada"
             )
+    
+    # Validar slug único
+    existing = ChannelService.get_channel_by_slug(db, channel_data.slug)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Slug já está em uso"
+        )
     
     channel = ChannelService.create_channel(
         db,
@@ -87,6 +110,15 @@ async def update_channel(
     db: Session = Depends(get_db)
 ):
     """Atualiza um canal."""
+    # Se slug está sendo alterado, validar unicidade
+    if channel_data.slug:
+        existing = ChannelService.get_channel_by_slug(db, channel_data.slug)
+        if existing and existing.id != channel_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Slug já está em uso"
+            )
+    
     updated_channel = ChannelService.update_channel(db, channel_id, **channel_data.dict(exclude_unset=True))
     
     if not updated_channel:
@@ -98,7 +130,7 @@ async def update_channel(
     return updated_channel
 
 
-@router.delete("/{channel_id}")
+@router.delete("/{channel_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_channel(
     channel_id: UUID,
     current_user: dict = Depends(get_current_user),
@@ -116,7 +148,7 @@ async def delete_channel(
     if channel.status == "live":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Não pode remover um canal que está live"
+            detail="Não pode remover um canal que está live. Pare o canal primeiro."
         )
     
     success = ChannelService.delete_channel(db, channel_id)
@@ -127,7 +159,7 @@ async def delete_channel(
             detail="Canal não encontrado"
         )
     
-    return {"success": True}
+    return None
 
 
 @router.post("/{channel_id}/start")
@@ -145,19 +177,32 @@ async def start_channel(
             detail="Canal não encontrado"
         )
     
+    if channel.status == "live":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Canal já está live"
+        )
+    
     if not channel.source_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Canal não tem uma fonte associada"
         )
     
-    updated_channel = ChannelService.update_channel(db, channel_id, status="live")
-    ChannelService.add_event(db, channel_id, "started", "user", user_id=UUID(current_user["user_id"]))
+    try:
+        result = await ChannelService.start_channel(db, channel_id, UUID(current_user["user_id"]))
+        return result
     
-    return {
-        "status": updated_channel.status,
-        "stream_url": f"/stream/{channel.slug}/manifest.m3u8"
-    }
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao iniciar canal: {str(e)}"
+        )
 
 
 @router.post("/{channel_id}/stop")
@@ -181,16 +226,21 @@ async def stop_channel(
             detail="Canal não está live"
         )
     
-    updated_channel = ChannelService.update_channel(db, channel_id, status="offline")
-    ChannelService.add_event(db, channel_id, "stopped", "user", user_id=UUID(current_user["user_id"]))
+    success = await ChannelService.stop_channel(db, channel_id, UUID(current_user["user_id"]))
     
-    return {"status": updated_channel.status}
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro ao parar canal"
+        )
+    
+    return {"status": "offline"}
 
 
 @router.post("/{channel_id}/switch-source")
 async def switch_source(
     channel_id: UUID,
-    source_id: UUID,
+    source_id: UUID = Query(..., description="ID da nova fonte"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -214,17 +264,18 @@ async def switch_source(
     if source.status != "online":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Fonte não está online"
+            detail=f"Fonte não está online (status: {source.status})"
         )
     
-    old_source_id = channel.source_id
-    updated_channel = ChannelService.update_channel(db, channel_id, source_id=source_id)
-    ChannelService.add_event(
-        db, channel_id, "source_changed", "user",
-        details={"old_source_id": str(old_source_id), "new_source_id": str(source_id)},
-        user_id=UUID(current_user["user_id"])
-    )
+    success = await ChannelService.switch_source(db, channel_id, source_id, UUID(current_user["user_id"]))
     
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro ao trocar fonte"
+        )
+    
+    updated_channel = ChannelService.get_channel_by_id(db, channel_id)
     return updated_channel
 
 
@@ -252,10 +303,28 @@ async def get_thumbnail(
     return {"thumbnail_url": channel.thumbnail_url}
 
 
+@router.post("/{channel_id}/thumbnail/update")
+async def update_thumbnail(
+    channel_id: UUID,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Força atualização do thumbnail de um canal."""
+    thumbnail_url = await ChannelService.update_thumbnail(db, channel_id)
+    
+    if not thumbnail_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Não foi possível atualizar o thumbnail. Canal deve estar live."
+        )
+    
+    return {"thumbnail_url": thumbnail_url}
+
+
 @router.get("/{channel_id}/events", response_model=list[ChannelEventSchema])
 async def get_channel_events(
     channel_id: UUID,
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(100, ge=1, le=1000, description="Limite de eventos"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -270,3 +339,17 @@ async def get_channel_events(
     
     events = ChannelService.get_events(db, channel_id, limit=limit)
     return events
+
+
+@router.get("/summary/status")
+async def get_channels_status_summary(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Obtém resumo de status de todos os canais."""
+    summary = ChannelService.get_channel_status_summary(db)
+    
+    return {
+        "summary": summary,
+        "total": sum(summary.values())
+    }

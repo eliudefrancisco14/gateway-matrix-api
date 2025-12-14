@@ -1,11 +1,14 @@
 """
-Serviço de fontes de ingestão.
+Serviço de fontes de ingestão (modificado com lógica de conexão real).
 """
 from sqlalchemy.orm import Session
 from app.models.source import Source, SourceMetric
 from uuid import UUID
 from typing import Optional, List
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class SourceService:
@@ -14,19 +17,24 @@ class SourceService:
     @staticmethod
     def create_source(db: Session, name: str, protocol: str, source_type: str,
                      endpoint_url: str, created_by: UUID, **kwargs) -> Source:
-        """Cria uma nova fonte."""
+        """
+        Cria uma nova fonte.
+        Inicia automaticamente em status 'connecting' - o monitor worker tentará conectar.
+        """
         source = Source(
             name=name,
             protocol=protocol,
             source_type=source_type,
             endpoint_url=endpoint_url,
             created_by=created_by,
-            status="offline",
+            status="connecting",  # Inicia como connecting
             **kwargs
         )
         db.add(source)
         db.commit()
         db.refresh(source)
+        
+        logger.info(f"Fonte criada: {name} (ID: {source.id}, Status: connecting)")
         return source
     
     @staticmethod
@@ -58,6 +66,7 @@ class SourceService:
             source.updated_at = datetime.utcnow()
             db.commit()
             db.refresh(source)
+            logger.info(f"Fonte atualizada: {source.name} (ID: {source_id})")
         return source
     
     @staticmethod
@@ -65,8 +74,17 @@ class SourceService:
         """Remove uma fonte."""
         source = SourceService.get_source_by_id(db, source_id)
         if source:
+            # Importar aqui para evitar circular import
+            from app.utils.ffmpeg_wrapper import ffmpeg_wrapper
+            import asyncio
+            
+            # Parar ingestão se estiver ativa
+            if ffmpeg_wrapper.is_running(str(source_id)):
+                asyncio.create_task(ffmpeg_wrapper.stop_ingest(str(source_id)))
+            
             db.delete(source)
             db.commit()
+            logger.info(f"Fonte removida: {source.name} (ID: {source_id})")
             return True
         return False
     
@@ -89,3 +107,142 @@ class SourceService:
         return db.query(SourceMetric).filter(SourceMetric.source_id == source_id).order_by(
             SourceMetric.timestamp.desc()
         ).limit(limit).all()
+    
+    @staticmethod
+    def get_metrics_history(
+        db: Session,
+        source_id: UUID,
+        from_time: Optional[datetime] = None,
+        to_time: Optional[datetime] = None,
+        limit: int = 1000
+    ) -> List[SourceMetric]:
+        """
+        Obtém histórico de métricas com filtro de período.
+        
+        Args:
+            source_id: ID da fonte
+            from_time: Data/hora inicial (opcional)
+            to_time: Data/hora final (opcional)
+            limit: Limite de registros
+        """
+        query = db.query(SourceMetric).filter(SourceMetric.source_id == source_id)
+        
+        if from_time:
+            query = query.filter(SourceMetric.timestamp >= from_time)
+        
+        if to_time:
+            query = query.filter(SourceMetric.timestamp <= to_time)
+        
+        return query.order_by(SourceMetric.timestamp.desc()).limit(limit).all()
+    
+    @staticmethod
+    async def test_source_connectivity(db: Session, source_id: UUID) -> dict:
+        """
+        Testa a conectividade de uma fonte usando stream probe.
+        
+        Returns:
+            Dict com resultado do teste
+        """
+        from app.utils.stream_probe import stream_probe
+        
+        source = SourceService.get_source_by_id(db, source_id)
+        
+        if not source:
+            return {
+                "reachable": False,
+                "error": "Fonte não encontrada"
+            }
+        
+        try:
+            # Teste rápido de conectividade
+            is_reachable = await stream_probe.test_connectivity(
+                source.endpoint_url,
+                source.protocol,
+                timeout=5
+            )
+            
+            if is_reachable:
+                # Fazer probe completo
+                stream_info = await stream_probe.probe(
+                    source.endpoint_url,
+                    source.protocol,
+                    timeout=10
+                )
+                
+                if stream_info:
+                    return {
+                        "reachable": True,
+                        "stream_info": stream_info.to_dict()
+                    }
+                else:
+                    return {
+                        "reachable": True,
+                        "message": "Conectado mas probe falhou"
+                    }
+            else:
+                return {
+                    "reachable": False,
+                    "error": "Não foi possível conectar ao endpoint"
+                }
+        
+        except Exception as e:
+            logger.error(f"Erro ao testar conectividade: {e}")
+            return {
+                "reachable": False,
+                "error": str(e)
+            }
+    
+    @staticmethod
+    async def reconnect_source(db: Session, source_id: UUID) -> bool:
+        """
+        Força reconexão de uma fonte.
+        
+        Returns:
+            True se reconexão foi iniciada
+        """
+        from app.utils.ffmpeg_wrapper import ffmpeg_wrapper
+        
+        source = SourceService.get_source_by_id(db, source_id)
+        
+        if not source:
+            return False
+        
+        try:
+            # Parar ingestão atual (se existir)
+            await ffmpeg_wrapper.stop_ingest(str(source_id))
+            
+            # Atualizar status para connecting
+            SourceService.update_source(db, source_id, status="connecting")
+            
+            logger.info(f"Reconexão iniciada para fonte: {source.name}")
+            
+            # O source_monitor_worker detectará o status 'connecting' e iniciará a ingestão
+            return True
+        
+        except Exception as e:
+            logger.error(f"Erro ao reconectar fonte: {e}")
+            return False
+    
+    @staticmethod
+    def get_source_status_summary(db: Session) -> dict:
+        """
+        Retorna resumo de status de todas as fontes.
+        
+        Returns:
+            Dict com contagem por status
+        """
+        from sqlalchemy import func
+        
+        result = db.query(
+            Source.status,
+            func.count(Source.id).label('count')
+        ).filter(
+            Source.is_active == True
+        ).group_by(Source.status).all()
+        
+        summary = {status: 0 for status in ["online", "offline", "connecting", "unstable", "error"]}
+        
+        for status, count in result:
+            summary[status] = count
+        
+        return summary
