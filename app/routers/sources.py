@@ -13,7 +13,7 @@ from app.schemas.source import SourceSchema, SourceCreateSchema, SourceUpdateSch
 router = APIRouter(prefix="/sources", tags=["sources"])
 
 
-@router.get("", response_model=dict)
+@router.get("")
 async def list_sources(
     skip: int = Query(0, ge=0, description="Número de registros a pular"),
     limit: int = Query(10, ge=1, le=100, description="Limite de registros por página"),
@@ -23,17 +23,30 @@ async def list_sources(
     db: Session = Depends(get_db)
 ):
     """Lista todas as fontes com paginação e filtros."""
+    from app.models.source import Source
+    from app.schemas.pagination import PaginatedResponse
+    from app.schemas.source import SourceSchema
+    
+    # Contar total com filtros
+    query = db.query(Source).filter(Source.is_active == True)
+    
+    if status:
+        query = query.filter(Source.status == status)
+    if protocol:
+        query = query.filter(Source.protocol == protocol)
+    
+    total = query.count()
+    
+    # Buscar itens paginados
     sources = SourceService.get_all_sources(db, skip=skip, limit=limit, status=status, protocol=protocol)
     
-    # Total de registros (sem paginação)
-    total = db.query(db.query(db.models.Source).filter_by(is_active=True)).count() if not (status or protocol) else len(sources)
-    
-    return {
-        "items": sources,
-        "total": total,
-        "skip": skip,
-        "limit": limit
-    }
+    # Retornar resposta paginada
+    return PaginatedResponse[SourceSchema].create(
+        items=sources,
+        total=total,
+        skip=skip,
+        limit=limit
+    )
 
 
 @router.post("", response_model=SourceSchema, status_code=status.HTTP_201_CREATED)

@@ -20,7 +20,37 @@ class SourceService:
         """
         Cria uma nova fonte.
         Inicia automaticamente em status 'connecting' - o monitor worker tentará conectar.
+        
+        Para YouTube: extrai video_id e armazena URL original e stream URL.
         """
+        import re
+        
+        # Processamento especial para YouTube
+        if protocol == "youtube":
+            # Extrair video_id
+            youtube_patterns = [
+                r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})',
+                r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/live\/([a-zA-Z0-9_-]{11})',
+                r'(?:https?:\/\/)?youtu\.be\/([a-zA-Z0-9_-]{11})',
+            ]
+            
+            video_id = None
+            for pattern in youtube_patterns:
+                match = re.search(pattern, endpoint_url)
+                if match:
+                    video_id = match.group(1)
+                    break
+            
+            if video_id:
+                # Armazenar URL original e video_id em meta_data
+                meta_data = kwargs.get('meta_data', {}) or {}
+                meta_data['original_url'] = endpoint_url
+                meta_data['video_id'] = video_id
+                meta_data['stream_url'] = endpoint_url  # Será atualizado pelo worker com URL real do stream
+                kwargs['meta_data'] = meta_data
+                
+                logger.info(f"YouTube video_id extraído: {video_id}")
+        
         source = Source(
             name=name,
             protocol=protocol,

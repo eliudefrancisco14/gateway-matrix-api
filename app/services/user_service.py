@@ -1,5 +1,5 @@
 """
-Serviço de utilizadores.
+Serviço de utilizadores (atualizado com filtros).
 """
 from sqlalchemy.orm import Session
 from app.models.user import User
@@ -44,9 +44,31 @@ class UserService:
         return None
     
     @staticmethod
-    def get_all_users(db: Session, skip: int = 0, limit: int = 10) -> List[User]:
-        """Obtém todos os utilizadores com paginação."""
-        return db.query(User).offset(skip).limit(limit).all()
+    def get_all_users(
+        db: Session,
+        skip: int = 0,
+        limit: int = 10,
+        role: Optional[str] = None,
+        active: Optional[bool] = None
+    ) -> List[User]:
+        """
+        Obtém todos os utilizadores com paginação e filtros.
+        
+        Args:
+            skip: Registros a pular
+            limit: Limite por página
+            role: Filtrar por role (admin, operator, viewer)
+            active: Filtrar por status ativo/inativo
+        """
+        query = db.query(User)
+        
+        if role:
+            query = query.filter(User.role == role)
+        
+        if active is not None:
+            query = query.filter(User.is_active == active)
+        
+        return query.offset(skip).limit(limit).all()
     
     @staticmethod
     def update_user(db: Session, user_id: UUID, **kwargs) -> Optional[User]:

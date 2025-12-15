@@ -15,6 +15,28 @@ from datetime import timedelta
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+@router.post("/register", response_model=UserSchema, status_code=status.HTTP_201_CREATED)
+async def register(credentials: LoginSchema, db: Session = Depends(get_db)):
+    """Cria um novo utilizador (endpoint público para testes)."""
+    # Verificar se email já existe
+    existing_user = UserService.get_user_by_email(db, credentials.email)
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email já registado"
+        )
+    
+    # Criar utilizador com role viewer por padrão
+    user = UserService.create_user(
+        db,
+        email=credentials.email,
+        password=credentials.password,
+        name=credentials.email.split('@')[0], 
+        role="viewer"
+    )
+    
+    return user
+
 @router.post("/login", response_model=TokenSchema)
 async def login(credentials: LoginSchema, db: Session = Depends(get_db)):
     """Autentica um utilizador e retorna tokens JWT."""

@@ -9,7 +9,7 @@ import logging
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.core.scheduler import SchedulerManager
-from app.routers import auth, users, sources, channels, recordings, media_segments, ai_analyses, monitoring
+from app.routers import auth, users, sources, channels, recordings, media_segments, ai_analyses, monitoring, streaming
 from app.workers.source_monitor_worker import source_monitor_worker
 from app.workers.recording_worker import recording_worker
 from app.workers.alert_worker import alert_worker
@@ -102,6 +102,7 @@ app.include_router(recordings.router)
 app.include_router(media_segments.router)
 app.include_router(ai_analyses.router)
 app.include_router(monitoring.router)
+app.include_router(streaming.router)
 
 
 @app.get("/")

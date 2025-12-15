@@ -11,6 +11,7 @@ from app.schemas.ai_analysis import (
     ContentAnalysisSchema, SummarySchema, AIInsightSchema
 )
 from app.schemas.auth import LoginSchema, TokenSchema, RefreshTokenSchema
+from app.schemas.pagination import PaginationParams, PaginatedResponse
 
 __all__ = [
     "UserSchema",
@@ -36,5 +37,7 @@ __all__ = [
     "AIInsightSchema",
     "LoginSchema",
     "TokenSchema",
-    "RefreshTokenSchema"
+    "RefreshTokenSchema",
+    "PaginationParams",
+    "PaginatedResponse"
 ]

@@ -1,5 +1,5 @@
 """
-Rotas de utilizadores e administração.
+Rotas de utilizadores e administração (atualizado com paginação e filtros).
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -8,16 +8,17 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.services.user_service import UserService
 from app.schemas.user import UserSchema, UserCreateSchema, UserUpdateSchema
+from app.schemas.pagination import PaginatedResponse
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-@router.get("", response_model=list[UserSchema])
+@router.get("")
 async def list_users(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(10, ge=1, le=100),
-    role: str = Query(None),
-    active: bool = Query(None),
+    skip: int = Query(0, ge=0, description="Número de registros a pular"),
+    limit: int = Query(10, ge=1, le=100, description="Limite de registros por página"),
+    role: str = Query(None, description="Filtrar por role (admin, operator, viewer)"),
+    active: bool = Query(None, description="Filtrar por status ativo/inativo"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -30,11 +31,37 @@ async def list_users(
             detail="Permissão insuficiente"
         )
     
-    users = UserService.get_all_users(db, skip=skip, limit=limit)
-    return users
+    # Validar role (se fornecido)
+    if role and role not in ["admin", "operator", "viewer"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Role inválido. Use: admin, operator ou viewer"
+        )
+    
+    # Buscar utilizadores com filtros
+    users = UserService.get_all_users(db, skip=skip, limit=limit, role=role, active=active)
+    
+    # Contar total com filtros
+    from app.models.user import User
+    total_query = db.query(User)
+    
+    if role:
+        total_query = total_query.filter(User.role == role)
+    if active is not None:
+        total_query = total_query.filter(User.is_active == active)
+    
+    total = total_query.count()
+    
+    # Retornar resposta paginada
+    return PaginatedResponse[UserSchema].create(
+        items=users,
+        total=total,
+        skip=skip,
+        limit=limit
+    )
 
 
-@router.post("", response_model=UserSchema)
+@router.post("", response_model=UserSchema, status_code=status.HTTP_201_CREATED)
 async def create_user(
     user_data: UserCreateSchema,
     current_user: dict = Depends(get_current_user),
@@ -113,7 +140,7 @@ async def update_user(
     return updated_user
 
 
-@router.delete("/{user_id}")
+@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(
     user_id: UUID,
     current_user: dict = Depends(get_current_user),
@@ -143,4 +170,4 @@ async def delete_user(
             detail="Utilizador não encontrado"
         )
     
-    return {"success": True}
+    return None

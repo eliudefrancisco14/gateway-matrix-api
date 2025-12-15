@@ -13,7 +13,7 @@ from app.schemas.channel import ChannelSchema, ChannelCreateSchema, ChannelUpdat
 router = APIRouter(prefix="/channels", tags=["channels"])
 
 
-@router.get("", response_model=dict)
+@router.get("")
 async def list_channels(
     skip: int = Query(0, ge=0, description="Número de registros a pular"),
     limit: int = Query(10, ge=1, le=100, description="Limite de registros por página"),
@@ -23,9 +23,11 @@ async def list_channels(
     db: Session = Depends(get_db)
 ):
     """Lista todos os canais com paginação e filtros."""
-    channels = ChannelService.get_all_channels(db, skip=skip, limit=limit, status=status, category=category)
-    
     from app.models.channel import Channel
+    from app.schemas.pagination import PaginatedResponse
+    from app.schemas.channel import ChannelSchema
+    
+    # Contar total com filtros
     total_query = db.query(Channel).filter(Channel.is_active == True)
     if status:
         total_query = total_query.filter(Channel.status == status)
@@ -34,12 +36,16 @@ async def list_channels(
     
     total = total_query.count()
     
-    return {
-        "items": channels,
-        "total": total,
-        "skip": skip,
-        "limit": limit
-    }
+    # Buscar itens paginados
+    channels = ChannelService.get_all_channels(db, skip=skip, limit=limit, status=status, category=category)
+    
+    # Retornar resposta paginada
+    return PaginatedResponse[ChannelSchema].create(
+        items=channels,
+        total=total,
+        skip=skip,
+        limit=limit
+    )
 
 
 @router.post("", response_model=ChannelSchema, status_code=status.HTTP_201_CREATED)
