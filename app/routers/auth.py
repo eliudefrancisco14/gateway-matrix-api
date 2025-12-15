@@ -1,5 +1,5 @@
 """
-Rotas de autenticação.
+Rotas de autenticação com tratamento de erros melhorado.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -8,7 +8,7 @@ from app.core.security import (
     create_access_token, create_refresh_token, decode_token, get_current_user
 )
 from app.services.user_service import UserService
-from app.schemas.auth import LoginSchema, TokenSchema, RefreshTokenSchema
+from app.schemas.auth import LoginSchema, TokenSchema, RefreshTokenSchema, RegisterSchema
 from app.schemas.user import UserSchema
 from datetime import timedelta
 
@@ -16,8 +16,14 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=UserSchema, status_code=status.HTTP_201_CREATED)
-async def register(credentials: LoginSchema, db: Session = Depends(get_db)):
-    """Cria um novo utilizador (endpoint público para testes)."""
+async def register(credentials: RegisterSchema, db: Session = Depends(get_db)):
+    """
+    Cria um novo utilizador.
+    
+    Validações:
+    - Email deve ser único
+    - Senha deve ter entre 6 e 72 caracteres
+    """
     # Verificar se email já existe
     existing_user = UserService.get_user_by_email(db, credentials.email)
     if existing_user:
@@ -26,36 +32,59 @@ async def register(credentials: LoginSchema, db: Session = Depends(get_db)):
             detail="Email já registado"
         )
     
-    # Criar utilizador com role viewer por padrão
-    user = UserService.create_user(
-        db,
-        email=credentials.email,
-        password=credentials.password,
-        name=credentials.email.split('@')[0], 
-        role="viewer"
-    )
+    try:
+        # Criar utilizador com role viewer por padrão
+        user = UserService.create_user(
+            db,
+            email=credentials.email,
+            password=credentials.password,
+            name=credentials.name,
+            role="viewer"
+        )
+        return user
     
-    return user
+    except ValueError as e:
+        # Capturar erros de validação de senha
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
 
 @router.post("/login", response_model=TokenSchema)
 async def login(credentials: LoginSchema, db: Session = Depends(get_db)):
-    """Autentica um utilizador e retorna tokens JWT."""
-    user = UserService.authenticate_user(db, credentials.email, credentials.password)
+    """
+    Autentica um utilizador e retorna tokens JWT.
     
-    if not user:
+    Retorna:
+    - access_token: Token JWT para autenticação
+    - refresh_token: Token para renovar access_token
+    - token_type: Tipo de token (bearer)
+    """
+    try:
+        user = UserService.authenticate_user(db, credentials.email, credentials.password)
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Email ou senha inválidos"
+            )
+        
+        access_token = create_access_token(data={"sub": str(user.id)})
+        refresh_token = create_refresh_token(data={"sub": str(user.id)})
+        
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer"
+        }
+    
+    except ValueError as e:
+        # Capturar erros de validação de senha
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email ou senha inválidos"
         )
-    
-    access_token = create_access_token(data={"sub": str(user.id)})
-    refresh_token = create_refresh_token(data={"sub": str(user.id)})
-    
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer"
-    }
 
 
 @router.post("/refresh", response_model=TokenSchema)
@@ -98,3 +127,4 @@ async def get_current_user_info(current_user: dict = Depends(get_current_user), 
         )
     
     return user
+

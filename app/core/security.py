@@ -8,22 +8,72 @@ from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.core.config import settings
+import hashlib
 
-# Contexto de hash de senhas
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Contexto de hash de senhas com configuração otimizada
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__rounds=12  # Número de rounds (mais seguro)
+)
 
 # Esquema de segurança
 security = HTTPBearer()
 
 
 def hash_password(password: str) -> str:
-    """Hash de uma senha usando bcrypt."""
-    return pwd_context.hash(password)
+    """
+    Hash de uma senha usando bcrypt com validação de tamanho.
+    
+    Args:
+        password: Senha em texto plano (máximo 72 bytes)
+    
+    Returns:
+        Hash bcrypt da senha
+    
+    Raises:
+        ValueError: Se a senha exceder 72 bytes
+    """
+    # Validar tamanho da senha
+    if len(password.encode('utf-8')) > 72:
+        raise ValueError(
+            f'Senha não pode ter mais de 72 bytes. '
+            f'Tamanho atual: {len(password.encode("utf-8"))} bytes'
+        )
+    
+    try:
+        return pwd_context.hash(password)
+    except ValueError as e:
+        # Capturar erro específico do bcrypt
+        if "password cannot be longer than 72 bytes" in str(e):
+            raise ValueError(
+                'Senha é muito longa. Máximo 72 caracteres permitidos.'
+            )
+        raise
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verifica se a senha corresponde ao hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    """
+    Verifica se a senha corresponde ao hash.
+    
+    Args:
+        plain_password: Senha em texto plano
+        hashed_password: Hash bcrypt armazenado
+    
+    Returns:
+        True se a senha é válida, False caso contrário
+    """
+    # Validar tamanho da senha antes de verificar
+    if len(plain_password.encode('utf-8')) > 72:
+        return False
+    
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except ValueError as e:
+        # Capturar erro específico do bcrypt
+        if "password cannot be longer than 72 bytes" in str(e):
+            return False
+        raise
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
