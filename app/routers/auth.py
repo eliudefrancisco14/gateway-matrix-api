@@ -32,23 +32,23 @@ async def register(credentials: RegisterSchema, db: Session = Depends(get_db)):
             detail="Email já registado"
         )
     
-    try:
-        # Criar utilizador com role viewer por padrão
-        user = UserService.create_user(
-            db,
-            email=credentials.email,
-            password=credentials.password,
-            name=credentials.name,
-            role="viewer"
-        )
-        return user
+    # try:
+    # Criar utilizador com role viewer por padrão
+    user = UserService.create_user(
+        db,
+        email=credentials.email,
+        password=credentials.password,
+        name=credentials.name,
+        role="viewer"
+    )
+    return user
     
-    except ValueError as e:
-        # Capturar erros de validação de senha
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+    # except ValueError as e:
+    #     # Capturar erros de validação de senha
+    #     raise HTTPException(
+    #         status_code=status.HTTP_400_BAD_REQUEST,
+    #         detail=str(e)
+    #     )
 
 
 @router.post("/login", response_model=TokenSchema)

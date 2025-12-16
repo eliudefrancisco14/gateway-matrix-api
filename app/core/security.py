@@ -25,35 +25,16 @@ security = HTTPBearer()
 
 def hash_password(password: str) -> str:
     """
-    Hash de uma senha usando bcrypt com validação de tamanho.
+    Hash de uma senha usando bcrypt.
     
     Args:
-        password: Senha em texto plano (máximo 72 bytes)
+        password: Senha em texto plano
     
     Returns:
         Hash bcrypt da senha
-    
-    Raises:
-        ValueError: Se a senha exceder 72 bytes
     """
-    # Validar tamanho da senha APENAS NA CRIAÇÃO DO HASH
-    password_bytes = password.encode('utf-8')
-    
-    if len(password_bytes) > 72:
-        raise ValueError(
-            f'Senha não pode ter mais de 72 bytes. '
-            f'Tamanho atual: {len(password_bytes)} bytes'
-        )
-    
-    try:
-        return pwd_context.hash(password)
-    except ValueError as e:
-        # Capturar erro específico do bcrypt
-        if "password cannot be longer than 72 bytes" in str(e):
-            raise ValueError(
-                'Senha é muito longa. Máximo 72 caracteres permitidos.'
-            )
-        raise
+    return pwd_context.hash(password)
+
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
