@@ -24,5 +24,6 @@ __all__ = [
     "Summary",
     "AIInsight",
     "SystemConfig",
-    "AuditLog"
+    "AuditLog",
+    "Alert"
 ]

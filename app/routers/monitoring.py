@@ -129,3 +129,54 @@ async def get_system_metrics(
         "network_bandwidth_mbps": 850.5,
         "uptime_seconds": 1234567
     }
+
+@router.get("/audit-logs")
+async def get_audit_logs(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=1000),
+    user_id: UUID = Query(None),
+    action: str = Query(None),
+    start_date: str = Query(None),
+    end_date: str = Query(None),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Retorna audit logs com filtros."""
+    from app.models.audit_log import AuditLog
+    from datetime import datetime
+    
+    query = db.query(AuditLog)
+    
+    if user_id:
+        query = query.filter(AuditLog.user_id == user_id)
+    if action:
+        query = query.filter(AuditLog.action == action)
+    if start_date:
+        query = query.filter(AuditLog.timestamp >= datetime.fromisoformat(start_date))
+    if end_date:
+        query = query.filter(AuditLog.timestamp <= datetime.fromisoformat(end_date))
+    
+    total = query.count()
+    logs = query.order_by(AuditLog.timestamp.desc()).offset(skip).limit(limit).all()
+    
+    return {
+        "items": [
+            {
+                "id": log.id,
+                "user_id": str(log.user_id) if log.user_id else None,
+                "action": log.action,
+                "resource_type": log.entity_type,
+                "resource_id": str(log.entity_id) if log.entity_id else None,
+                "details": {
+                    "old_values": log.old_values,
+                    "new_values": log.new_values
+                },
+                "ip_address": str(log.ip_address) if log.ip_address else None,
+                "created_at": log.timestamp.isoformat()
+            }
+            for log in logs
+        ],
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }

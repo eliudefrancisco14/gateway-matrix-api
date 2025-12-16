@@ -40,6 +40,10 @@ CREATE TYPE summary_type AS ENUM ('brief', 'detailed', 'bullets', 'executive');
 -- Tabela users
 CREATE TYPE user_role AS ENUM ('admin', 'operator', 'viewer');
 
+-- Tabela alerts
+
+CREATE TYPE alert_severity AS ENUM ('critical', 'error', 'warning', 'info');
+
 -- 3. Criação das Tabelas
 
 -- 3.1 Tabela users
@@ -248,6 +252,24 @@ CREATE TABLE ai_insights (
     created_at TIMESTAMP DEFAULT NOW(),
     expires_at TIMESTAMP
 );
+
+-- 3.15 Tabela alerts 
+CREATE TABLE alerts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    severity alert_severity NOT NULL,
+    message TEXT NOT NULL,
+    source_id UUID REFERENCES sources(id),
+    channel_id UUID REFERENCES channels(id),
+    acknowledged BOOLEAN DEFAULT FALSE,
+    acknowledged_by UUID REFERENCES users(id),
+    acknowledged_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Índices para otimização de consultas na tabela alerts
+CREATE INDEX idx_alerts_severity ON alerts(severity);
+CREATE INDEX idx_alerts_acknowledged ON alerts(acknowledged);
+CREATE INDEX idx_alerts_created_at ON alerts(created_at DESC);
 
 -- 4. Seeds Iniciais
 

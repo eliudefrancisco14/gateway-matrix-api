@@ -1,5 +1,6 @@
 """
 Wrapper para FFmpeg - Gestão de processos de ingestão, transcodificação e segmentação.
+Suporta: SRT, UDP, RTSP, HLS, HTTP_TS, DASH, YouTube
 """
 import asyncio
 import subprocess
@@ -8,6 +9,7 @@ import os
 from typing import Optional, Dict, Any, Callable
 from pathlib import Path
 import signal
+import json
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -48,12 +50,74 @@ class FFmpegWrapper:
         self.active_processes: Dict[str, FFmpegProcess] = {}
     
     @staticmethod
-    def _build_input_args(protocol: str, endpoint_url: str, connection_params: Optional[Dict] = None) -> list:
+    async def _extract_youtube_url(youtube_url: str) -> Optional[str]:
+        """
+        Extrai URL de stream do YouTube usando yt-dlp.
+        
+        Args:
+            youtube_url: URL do vídeo/live do YouTube
+        
+        Returns:
+            URL do stream ou None se falhar
+        """
+        try:
+            # Comando yt-dlp para extrair melhor formato
+            cmd = [
+                "yt-dlp",
+                "-f", "best",  # Melhor qualidade
+                "-g",  # Retornar apenas URL
+                "--no-warnings",
+                youtube_url
+            ]
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
+            
+            if process.returncode == 0:
+                stream_url = stdout.decode('utf-8').strip()
+                logger.info(f"YouTube stream URL extraída: {stream_url[:50]}...")
+                return stream_url
+            else:
+                error = stderr.decode('utf-8', errors='ignore')
+                logger.error(f"Erro ao extrair URL do YouTube: {error}")
+                return None
+        
+        except asyncio.TimeoutError:
+            logger.error("Timeout ao extrair URL do YouTube")
+            return None
+        
+        except FileNotFoundError:
+            logger.error("yt-dlp não encontrado! Instale: pip install yt-dlp")
+            return None
+        
+        except Exception as e:
+            logger.error(f"Erro ao extrair URL do YouTube: {e}")
+            return None
+    
+    @staticmethod
+    async def _build_input_args(protocol: str, endpoint_url: str, connection_params: Optional[Dict] = None) -> list:
         """Constrói argumentos de input baseado no protocolo."""
         args = []
         params = connection_params or {}
         
-        if protocol == "srt":
+        if protocol == "youtube":
+            # YouTube: extrair URL real do stream
+            logger.info("Extraindo URL do YouTube com yt-dlp...")
+            stream_url = await FFmpegWrapper._extract_youtube_url(endpoint_url)
+            
+            if not stream_url:
+                raise ValueError("Falha ao extrair URL do stream do YouTube")
+            
+            # Usar URL extraída
+            args.extend(["-i", stream_url])
+            logger.info("YouTube: usando URL extraída para ingestão")
+        
+        elif protocol == "srt":
             # SRT: srt://host:port?mode=caller&latency=200
             latency = params.get("latency", 200)
             mode = params.get("mode", "caller")
@@ -81,14 +145,8 @@ class FFmpegWrapper:
                 "-i", endpoint_url
             ])
         
-        elif protocol in ["hls", "http_ts"]:
-            # HLS/HTTP: http://host/path/playlist.m3u8
-            args.extend(["-i", endpoint_url])
-        
-        elif protocol == "youtube":
-            # YouTube: usa yt-dlp para extrair stream URL
-            # Nota: Requer yt-dlp instalado
-            logger.warning("YouTube requer yt-dlp - usando URL diretamente")
+        elif protocol in ["hls", "http_ts", "dash"]:
+            # HLS/HTTP/DASH: http://host/path/playlist.m3u8
             args.extend(["-i", endpoint_url])
         
         else:
@@ -119,8 +177,18 @@ class FFmpegWrapper:
             ])
         
         if output_format in ["dash", "both"]:
-            # DASH: Implementação futura
-            logger.warning("DASH output não implementado ainda")
+            # DASH: Segmentação MPEG-DASH
+            args.extend([
+                "-c:v", "libx264" if transcoding_profile else "copy",
+                "-c:a", "aac" if transcoding_profile else "copy",
+                "-f", "dash",
+                "-seg_duration", "2",
+                "-use_template", "1",
+                "-use_timeline", "1",
+                "-init_seg_name", "init-$RepresentationID$.m4s",
+                "-media_seg_name", "chunk-$RepresentationID$-$Number%05d$.m4s",
+                f"{output_path}/manifest.mpd"
+            ])
         
         return args
     
@@ -140,7 +208,7 @@ class FFmpegWrapper:
         
         Args:
             source_id: ID único da fonte
-            protocol: Protocolo da fonte (srt, udp, rtsp, etc)
+            protocol: Protocolo da fonte (srt, udp, rtsp, youtube, etc)
             endpoint_url: URL do endpoint
             output_path: Caminho de saída dos segmentos
             output_format: Formato de saída (hls, dash, both)
@@ -154,14 +222,20 @@ class FFmpegWrapper:
         # Construir comando FFmpeg
         cmd = [settings.ffmpeg_path, "-y"]  # -y: overwrite output
         
-        # Input args
-        cmd.extend(self._build_input_args(protocol, endpoint_url, connection_params))
+        # Input args (com suporte a YouTube)
+        input_args = await self._build_input_args(protocol, endpoint_url, connection_params)
+        cmd.extend(input_args)
         
         # Output args
         cmd.extend(self._build_output_args(output_format, output_path, transcoding_profile))
         
         # Log do comando (sem credenciais)
-        safe_cmd = " ".join(cmd).replace(endpoint_url, "<ENDPOINT>")
+        safe_cmd = " ".join(cmd)
+        # Ocultar URLs sensíveis
+        for i, part in enumerate(cmd):
+            if part.startswith(("http://", "https://", "srt://", "rtsp://", "udp://")):
+                safe_cmd = safe_cmd.replace(part, "<STREAM_URL>")
+        
         logger.info(f"Iniciando FFmpeg para {source_id}: {safe_cmd}")
         
         try:
@@ -220,7 +294,6 @@ class FFmpegWrapper:
     async def restart_ingest(self, source_id: str) -> bool:
         """Reinicia a ingestão de uma fonte."""
         await self.stop_ingest(source_id)
-        # Nota: O restart completo requer re-chamar start_ingest com os params originais
         logger.info(f"Ingestão reiniciada: {source_id}")
         return True
     
