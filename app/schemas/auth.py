@@ -30,19 +30,6 @@ class LoginSchema(BaseModel):
     email: str = Field(..., min_length=5, max_length=255)
     password: str = Field(..., min_length=6, max_length=72)  # ← LIMITE 72 BYTES
     
-    @validator('password')
-    def validate_password_length(cls, v):
-        """Valida que a senha não ultrapassa 72 bytes."""
-        if len(v.encode('utf-8')) > 72:
-            raise ValueError('Senha não pode ter mais de 72 caracteres (72 bytes)')
-        return v
-    
-    class Config:
-        example = {
-            "email": "user@example.com",
-            "password": "senha_segura_123"
-        }
-
 
 class RegisterSchema(BaseModel):
     """Schema para registro."""
@@ -50,16 +37,4 @@ class RegisterSchema(BaseModel):
     password: str = Field(..., min_length=6, max_length=72)  # ← LIMITE 72 BYTES
     name: str = Field(..., min_length=2, max_length=255)
     
-    @validator('password')
-    def validate_password_length(cls, v):
-        """Valida que a senha não ultrapassa 72 bytes."""
-        if len(v.encode('utf-8')) > 72:
-            raise ValueError('Senha não pode ter mais de 72 caracteres (72 bytes)')
-        return v
     
-    class Config:
-        example = {
-            "email": "newuser@example.com",
-            "password": "senha_segura_123",
-            "name": "João Silva"
-        }

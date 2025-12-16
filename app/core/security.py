@@ -8,7 +8,9 @@ from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.core.config import settings
-import hashlib
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Contexto de hash de senhas com configuração otimizada
 pwd_context = CryptContext(
@@ -34,11 +36,13 @@ def hash_password(password: str) -> str:
     Raises:
         ValueError: Se a senha exceder 72 bytes
     """
-    # Validar tamanho da senha
-    if len(password.encode('utf-8')) > 72:
+    # Validar tamanho da senha APENAS NA CRIAÇÃO DO HASH
+    password_bytes = password.encode('utf-8')
+    
+    if len(password_bytes) > 72:
         raise ValueError(
             f'Senha não pode ter mais de 72 bytes. '
-            f'Tamanho atual: {len(password.encode("utf-8"))} bytes'
+            f'Tamanho atual: {len(password_bytes)} bytes'
         )
     
     try:
@@ -57,23 +61,23 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Verifica se a senha corresponde ao hash.
     
     Args:
-        plain_password: Senha em texto plano
-        hashed_password: Hash bcrypt armazenado
+        plain_password: Senha em texto plano (do login)
+        hashed_password: Hash bcrypt armazenado no banco
     
     Returns:
         True se a senha é válida, False caso contrário
-    """
-    # Validar tamanho da senha antes de verificar
-    if len(plain_password.encode('utf-8')) > 72:
-        return False
     
+    Nota:
+        NÃO valida tamanho aqui - bcrypt já trata internamente.
+        A validação de 72 bytes é APENAS para hash_password().
+    """
     try:
+        # Passlib/bcrypt já lida com todas as validações necessárias
         return pwd_context.verify(plain_password, hashed_password)
-    except ValueError as e:
-        # Capturar erro específico do bcrypt
-        if "password cannot be longer than 72 bytes" in str(e):
-            return False
-        raise
+    except Exception as e:
+        # Log para debug sem expor detalhes ao usuário
+        logger.debug(f"Falha na verificação de senha: {type(e).__name__}")
+        return False
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
