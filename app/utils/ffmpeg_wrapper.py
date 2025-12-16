@@ -8,6 +8,7 @@ import os
 from typing import Optional, Dict, Any, Callable
 from pathlib import Path
 import signal
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ class FFmpegWrapper:
         Path(output_path).mkdir(parents=True, exist_ok=True)
         
         # Construir comando FFmpeg
-        cmd = ["ffmpeg", "-y"]  # -y: overwrite output
+        cmd = [settings.ffmpeg_path, "-y"]  # -y: overwrite output
         
         # Input args
         cmd.extend(self._build_input_args(protocol, endpoint_url, connection_params))

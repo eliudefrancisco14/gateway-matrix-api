@@ -43,5 +43,12 @@ class Settings(BaseSettings):
         env_file = ".env"
         case_sensitive = False
 
+    # Storage
+    storage_base_path: str = os.getenv("STORAGE_BASE_PATH", "/var/broadcast/storage")
+    
+    # FFmpeg
+    ffmpeg_path: str = os.getenv("FFMPEG_PATH", "ffmpeg")
+    ffprobe_path: str = os.getenv("FFPROBE_PATH", "ffprobe")
+
 
 settings = Settings()

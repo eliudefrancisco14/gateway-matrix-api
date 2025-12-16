@@ -9,6 +9,7 @@ from typing import Optional, List
 from datetime import datetime
 import aiofiles
 import asyncio
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 class StorageManager:
     """Gerenciador de storage local."""
     
-    def __init__(self, base_path: str = "/var/broadcast/storage"):
+    def __init__(self, base_path: str = settings.storage_base_path):
         self.base_path = Path(base_path)
         self._ensure_structure()
     

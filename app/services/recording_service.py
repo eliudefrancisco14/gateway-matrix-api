@@ -7,6 +7,7 @@ from uuid import UUID
 from typing import Optional, List
 from datetime import datetime
 import logging
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +150,7 @@ class RecordingService:
             
             # Caso contrário, usar FFmpeg para converter
             cmd = [
-                "ffmpeg",
+                settings.ffmpeg_path,
                 "-y",
                 "-i", str(source_path),
                 "-c:v", "libx264",

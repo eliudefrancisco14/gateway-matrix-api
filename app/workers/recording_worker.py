@@ -13,6 +13,7 @@ from app.services.recording_service import RecordingService
 from app.services.channel_service import ChannelService
 from app.utils.ffmpeg_wrapper import FFmpegWrapper
 from app.utils.storage_manager import storage_manager
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ class RecordingWorker:
         try:
             # Comando FFmpeg para gravação contínua
             cmd = [
-                "ffmpeg",
+                settings.ffmpeg_path,
                 "-y",
                 "-i", source.endpoint_url,
                 "-c", "copy",  # Copy codecs (sem transcodificação)

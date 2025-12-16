@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ class StreamProbe:
             StreamInfo ou None se falhar
         """
         cmd = [
-            "ffprobe",
+            settings.ffprobe_path,
             "-v", "quiet",
             "-print_format", "json",
             "-show_format",
@@ -170,7 +171,7 @@ class StreamProbe:
             True se conseguiu conectar, False caso contrário
         """
         cmd = [
-            "ffprobe",
+            settings.ffprobe_path,
             "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
@@ -216,7 +217,7 @@ class StreamProbe:
             True se capturou com sucesso
         """
         cmd = [
-            "ffmpeg",
+            settings.ffmpeg_path,
             "-y",
             "-i", endpoint_url,
             "-vframes", "1",
