@@ -63,7 +63,7 @@ class FFmpegWrapper:
         try:
             # Comando yt-dlp para extrair melhor formato
             cmd = [
-                "yt-dlp",
+                settings.yt_dlp_path,
                 "-f", "best",  # Melhor qualidade
                 "-g",  # Retornar apenas URL
                 "--no-warnings",
