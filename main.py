@@ -1,10 +1,19 @@
 """
 Aplicação FastAPI principal para Sistema de Ingestão de Streams Broadcast.
 """
+
+import asyncio
+import sys
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    print("✓ ProactorEventLoop configurado no main.py")
+    
+    
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-import asyncio
+
 import logging
 from app.core.config import settings
 from app.core.database import Base, engine
@@ -21,7 +30,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

@@ -1,15 +1,16 @@
 """
 Wrapper para FFmpeg - Gestão de processos de ingestão, transcodificação e segmentação.
 Suporta: SRT, UDP, RTSP, HLS, HTTP_TS, DASH, YouTube
+COMPATÍVEL COM WINDOWS
 """
 import asyncio
 import subprocess
 import logging
 import os
+import sys
 from typing import Optional, Dict, Any, Callable
 from pathlib import Path
 import signal
-import json
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,9 @@ class FFmpegProcess:
         """Termina o processo de forma graciosa."""
         if self.process and self.is_running:
             try:
-                self.process.send_signal(signal.SIGTERM)
+                # Windows: usar terminate() diretamente
+                self.process.terminate()
+                
                 await asyncio.wait_for(self.process.wait(), timeout=5.0)
                 self.is_running = False
                 logger.info("Processo FFmpeg terminado graciosamente")
@@ -48,6 +51,21 @@ class FFmpegWrapper:
     
     def __init__(self):
         self.active_processes: Dict[str, FFmpegProcess] = {}
+        self._validate_executables()
+    
+    def _validate_executables(self):
+        """Valida que FFmpeg e yt-dlp estão acessíveis."""
+        # Validar FFmpeg
+        if not Path(settings.ffmpeg_path).exists():
+            logger.warning(f"FFmpeg não encontrado em: {settings.ffmpeg_path}")
+        else:
+            logger.info(f"FFmpeg encontrado: {settings.ffmpeg_path}")
+        
+        # Validar yt-dlp
+        if not Path(settings.yt_dlp_path).exists():
+            logger.warning(f"yt-dlp não encontrado em: {settings.yt_dlp_path}")
+        else:
+            logger.info(f"yt-dlp encontrado: {settings.yt_dlp_path}")
     
     @staticmethod
     async def _extract_youtube_url(youtube_url: str) -> Optional[str]:
@@ -61,42 +79,101 @@ class FFmpegWrapper:
             URL do stream ou None se falhar
         """
         try:
-            # Comando yt-dlp para extrair melhor formato
+            # Comando yt-dlp com argumentos corretos
             cmd = [
                 settings.yt_dlp_path,
-                "-f", "best",  # Melhor qualidade
-                "-g",  # Retornar apenas URL
+                "--no-check-certificates",  # Ignora problemas de SSL
                 "--no-warnings",
+                "--quiet",
+                "-f", "best",  # Melhor formato disponível
+                "-g",  # Retornar apenas URL
                 youtube_url
             ]
             
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+            logger.info(f"Executando yt-dlp: {' '.join(cmd)}")
+            
+            # WINDOWS FIX: Usar subprocess.run ao invés de asyncio
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                )
             )
             
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
-            
-            if process.returncode == 0:
-                stream_url = stdout.decode('utf-8').strip()
-                logger.info(f"YouTube stream URL extraída: {stream_url[:50]}...")
-                return stream_url
+            # Verificar resultado
+            if result.returncode == 0:
+                stream_url = result.stdout.strip()
+                if stream_url:
+                    logger.info(f"✓ YouTube URL extraída com sucesso ({len(stream_url)} caracteres)")
+                    logger.debug(f"Stream URL: {stream_url[:100]}...")
+                    return stream_url
+                else:
+                    logger.error("yt-dlp retornou vazio")
+                    return None
             else:
-                error = stderr.decode('utf-8', errors='ignore')
-                logger.error(f"Erro ao extrair URL do YouTube: {error}")
-                return None
-        
-        except asyncio.TimeoutError:
-            logger.error("Timeout ao extrair URL do YouTube")
-            return None
+                error = result.stderr
+                logger.error(f"yt-dlp falhou (código {result.returncode}): {error}")
+                
+                # Tentar formato alternativo (livestream)
+                logger.info("Tentando formato alternativo para livestream...")
+                return await FFmpegWrapper._extract_youtube_url_alternative(youtube_url)
         
         except FileNotFoundError:
-            logger.error("yt-dlp não encontrado! Instale: pip install yt-dlp")
+            logger.error(f"❌ yt-dlp não encontrado em: {settings.yt_dlp_path}")
+            logger.error("Instale com: pip install yt-dlp")
+            return None
+        
+        except subprocess.TimeoutExpired:
+            logger.error("yt-dlp timeout (30s)")
             return None
         
         except Exception as e:
-            logger.error(f"Erro ao extrair URL do YouTube: {e}")
+            logger.error(f"Erro ao extrair URL do YouTube: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
+    @staticmethod
+    async def _extract_youtube_url_alternative(youtube_url: str) -> Optional[str]:
+        """Tenta extrair URL com formato alternativo (para livestreams)."""
+        try:
+            cmd = [
+                settings.yt_dlp_path,
+                "--no-check-certificates",
+                "--no-warnings",
+                "--quiet",
+                "-f", "worst",  # Usar worst para garantir compatibilidade
+                "-g",
+                youtube_url
+            ]
+            
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                )
+            )
+            
+            if result.returncode == 0:
+                stream_url = result.stdout.strip()
+                if stream_url:
+                    logger.info(f"✓ URL alternativa extraída: {stream_url[:100]}...")
+                    return stream_url
+            
+            return None
+        
+        except Exception as e:
+            logger.error(f"Formato alternativo falhou: {e}")
             return None
     
     @staticmethod
@@ -107,7 +184,7 @@ class FFmpegWrapper:
         
         if protocol == "youtube":
             # YouTube: extrair URL real do stream
-            logger.info("Extraindo URL do YouTube com yt-dlp...")
+            logger.info(f"🎥 Processando YouTube: {endpoint_url}")
             stream_url = await FFmpegWrapper._extract_youtube_url(endpoint_url)
             
             if not stream_url:
@@ -115,7 +192,7 @@ class FFmpegWrapper:
             
             # Usar URL extraída
             args.extend(["-i", stream_url])
-            logger.info("YouTube: usando URL extraída para ingestão")
+            logger.info("✓ YouTube: URL pronta para ingestão")
         
         elif protocol == "srt":
             # SRT: srt://host:port?mode=caller&latency=200
@@ -160,34 +237,43 @@ class FFmpegWrapper:
         """Constrói argumentos de output para HLS/DASH."""
         args = []
         
+        # Garantir que usamos codecs compatíveis
+        video_codec = "libx264" if transcoding_profile else "copy"
+        audio_codec = "aac" if transcoding_profile else "copy"
+        
         if output_format in ["hls", "both"]:
             # HLS: Segmentação adaptativa
             hls_time = 2  # 2 segundos por segmento
             hls_list_size = 5  # Manter 5 segmentos no manifest
             
+            # Converter caminhos Windows para formato Unix (FFmpeg prefere)
+            output_path_unix = output_path.replace("\\", "/")
+            
             args.extend([
-                "-c:v", "libx264" if transcoding_profile else "copy",
-                "-c:a", "aac" if transcoding_profile else "copy",
+                "-c:v", video_codec,
+                "-c:a", audio_codec,
                 "-f", "hls",
                 "-hls_time", str(hls_time),
                 "-hls_list_size", str(hls_list_size),
                 "-hls_flags", "delete_segments+append_list",
-                "-hls_segment_filename", f"{output_path}/segment_%03d.ts",
-                f"{output_path}/manifest.m3u8"
+                "-hls_segment_filename", f"{output_path_unix}/segment_%03d.ts",
+                f"{output_path_unix}/manifest.m3u8"
             ])
         
         if output_format in ["dash", "both"]:
             # DASH: Segmentação MPEG-DASH
+            output_path_unix = output_path.replace("\\", "/")
+            
             args.extend([
-                "-c:v", "libx264" if transcoding_profile else "copy",
-                "-c:a", "aac" if transcoding_profile else "copy",
+                "-c:v", video_codec,
+                "-c:a", audio_codec,
                 "-f", "dash",
                 "-seg_duration", "2",
                 "-use_template", "1",
                 "-use_timeline", "1",
                 "-init_seg_name", "init-$RepresentationID$.m4s",
                 "-media_seg_name", "chunk-$RepresentationID$-$Number%05d$.m4s",
-                f"{output_path}/manifest.mpd"
+                f"{output_path_unix}/manifest.mpd"
             ])
         
         return args
@@ -218,36 +304,45 @@ class FFmpegWrapper:
         """
         # Criar diretório de saída
         Path(output_path).mkdir(parents=True, exist_ok=True)
+        logger.info(f"📁 Diretório criado: {output_path}")
         
         # Construir comando FFmpeg
-        cmd = [settings.ffmpeg_path, "-y"]  # -y: overwrite output
+        cmd = [settings.ffmpeg_path, "-y", "-loglevel", "info"]  # -y: overwrite, log verbose
         
         # Input args (com suporte a YouTube)
-        input_args = await self._build_input_args(protocol, endpoint_url, connection_params)
-        cmd.extend(input_args)
+        try:
+            input_args = await self._build_input_args(protocol, endpoint_url, connection_params)
+            cmd.extend(input_args)
+        except ValueError as e:
+            logger.error(f"Erro ao construir argumentos de input: {e}")
+            if on_error:
+                await on_error(str(e))
+            raise
         
         # Output args
         cmd.extend(self._build_output_args(output_format, output_path, transcoding_profile))
         
-        # Log do comando (sem credenciais)
+        # Log do comando completo (mascarar URLs sensíveis)
         safe_cmd = " ".join(cmd)
-        # Ocultar URLs sensíveis
         for i, part in enumerate(cmd):
             if part.startswith(("http://", "https://", "srt://", "rtsp://", "udp://")):
                 safe_cmd = safe_cmd.replace(part, "<STREAM_URL>")
         
-        logger.info(f"Iniciando FFmpeg para {source_id}: {safe_cmd}")
+        logger.info(f"🚀 Comando FFmpeg:\n{safe_cmd}")
         
         try:
             # Iniciar processo
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             )
             
             ffmpeg_proc = FFmpegProcess(process, safe_cmd)
             self.active_processes[source_id] = ffmpeg_proc
+            
+            logger.info(f"✓ Processo FFmpeg iniciado (PID: {process.pid})")
             
             # Monitorar stderr em background
             asyncio.create_task(self._monitor_stderr(source_id, process, on_error))
@@ -255,7 +350,7 @@ class FFmpegWrapper:
             return ffmpeg_proc
         
         except Exception as e:
-            logger.error(f"Erro ao iniciar FFmpeg: {e}")
+            logger.error(f"❌ Erro ao iniciar FFmpeg: {type(e).__name__}: {e}")
             if on_error:
                 await on_error(str(e))
             raise
@@ -270,13 +365,19 @@ class FFmpegWrapper:
                 
                 line_str = line.decode('utf-8', errors='ignore').strip()
                 
+                # Log todas as mensagens (útil para debug)
+                if line_str:
+                    logger.debug(f"FFmpeg [{source_id}]: {line_str}")
+                
                 # Detectar erros críticos
-                if "error" in line_str.lower() or "failed" in line_str.lower():
-                    logger.error(f"FFmpeg [{source_id}]: {line_str}")
+                if any(err in line_str.lower() for err in ["error", "failed", "invalid"]):
+                    logger.error(f"⚠️ FFmpeg [{source_id}]: {line_str}")
                     if on_error:
                         await on_error(line_str)
-                else:
-                    logger.debug(f"FFmpeg [{source_id}]: {line_str}")
+                
+                # Detectar sucesso na conexão
+                if "Stream mapping:" in line_str or "Output #0" in line_str:
+                    logger.info(f"✓ FFmpeg [{source_id}]: Stream iniciado com sucesso")
         
         except Exception as e:
             logger.error(f"Erro ao monitorar stderr: {e}")
@@ -287,14 +388,14 @@ class FFmpegWrapper:
             ffmpeg_proc = self.active_processes[source_id]
             await ffmpeg_proc.terminate()
             del self.active_processes[source_id]
-            logger.info(f"Ingestão parada: {source_id}")
+            logger.info(f"⏹️ Ingestão parada: {source_id}")
             return True
         return False
     
     async def restart_ingest(self, source_id: str) -> bool:
         """Reinicia a ingestão de uma fonte."""
         await self.stop_ingest(source_id)
-        logger.info(f"Ingestão reiniciada: {source_id}")
+        logger.info(f"🔄 Ingestão reiniciada: {source_id}")
         return True
     
     def is_running(self, source_id: str) -> bool:
@@ -316,7 +417,7 @@ class FFmpegWrapper:
     
     async def shutdown_all(self):
         """Para todos os processos FFmpeg ativos."""
-        logger.info(f"Parando {len(self.active_processes)} processos FFmpeg")
+        logger.info(f"⏹️ Parando {len(self.active_processes)} processos FFmpeg")
         
         tasks = [
             self.stop_ingest(source_id) 
@@ -324,7 +425,7 @@ class FFmpegWrapper:
         ]
         
         await asyncio.gather(*tasks, return_exceptions=True)
-        logger.info("Todos os processos FFmpeg parados")
+        logger.info("✓ Todos os processos FFmpeg parados")
 
 
 # Instância global
